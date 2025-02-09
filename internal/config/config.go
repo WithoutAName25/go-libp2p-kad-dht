@@ -55,6 +55,7 @@ type Config struct {
 		RefreshQueryTimeout time.Duration
 		RefreshInterval     time.Duration
 		AutoRefresh         bool
+		AutoConnect         bool
 		LatencyTolerance    time.Duration
 		CheckInterval       time.Duration
 		PeerFilter          RouteTableFilterFunc
@@ -122,6 +123,7 @@ var Defaults = func(o *Config) error {
 	o.RoutingTable.RefreshQueryTimeout = 10 * time.Second
 	o.RoutingTable.RefreshInterval = 10 * time.Minute
 	o.RoutingTable.AutoRefresh = true
+	o.RoutingTable.AutoConnect = true
 	o.RoutingTable.PeerFilter = EmptyRTFilter
 
 	o.MaxRecordAge = providers.ProvideValidity

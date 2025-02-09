@@ -529,8 +529,13 @@ func (dht *IpfsDHT) dialPeer(ctx context.Context, p peer.ID) error {
 	ctx, span := internal.StartSpan(ctx, "IpfsDHT.DialPeer", trace.WithAttributes(attribute.String("PeerID", p.String())))
 	defer span.End()
 
+	if err := dht.autoConnectCheck(p); err != nil {
+		return err
+	}
+
 	// short-circuit if we're already connected.
 	if dht.host.Network().Connectedness(p) == network.Connected {
+		logger.Infow("already connected", "peer", p)
 		return nil
 	}
 
@@ -541,6 +546,7 @@ func (dht *IpfsDHT) dialPeer(ctx context.Context, p peer.ID) error {
 	})
 
 	pi := peer.AddrInfo{ID: p}
+	logger.Infow("connecting to peer", "peer", pi)
 	if err := dht.host.Connect(ctx, pi); err != nil {
 		logger.Debugf("error connecting: %s", err)
 		routing.PublishQueryEvent(ctx, &routing.QueryEvent{

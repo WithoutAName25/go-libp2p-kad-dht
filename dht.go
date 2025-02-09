@@ -2,6 +2,7 @@ package dht
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -123,6 +124,7 @@ type IpfsDHT struct {
 	rtPeerDiversityFilter  peerdiversity.PeerIPGroupFilter
 
 	autoRefresh bool
+	autoConnect bool
 
 	// timeout for the lookupCheck operation
 	lookupCheckTimeout time.Duration
@@ -163,6 +165,10 @@ type IpfsDHT struct {
 	// addrFilter is used to filter the addresses we put into the peer store.
 	// Mostly used to filter out localhost and local addresses.
 	addrFilter func([]ma.Multiaddr) []ma.Multiaddr
+
+	allowedPeers   map[peer.ID]struct{}
+	allowedPeersLk sync.Mutex
+	firstPeerTime  time.Time
 }
 
 // Assert that IPFS assumptions about interfaces aren't broken. These aren't a
@@ -198,6 +204,7 @@ func New(ctx context.Context, h host.Host, options ...Option) (*IpfsDHT, error) 
 	}
 
 	dht.autoRefresh = cfg.RoutingTable.AutoRefresh
+	dht.autoConnect = cfg.RoutingTable.AutoConnect
 
 	dht.maxRecordAge = cfg.MaxRecordAge
 	dht.enableProviders = cfg.EnableProviders
@@ -248,7 +255,7 @@ func New(ctx context.Context, h host.Host, options ...Option) (*IpfsDHT, error) 
 	dht.rtRefreshManager.Start()
 
 	// listens to the fix low peers chan and tries to fix the Routing Table
-	if !dht.disableFixLowPeers {
+	if !dht.disableFixLowPeers && dht.autoConnect {
 		dht.runFixLowPeersLoop()
 	}
 
@@ -622,6 +629,7 @@ func (dht *IpfsDHT) rtPeerLoop() {
 				}
 				// queryPeer set to true as we only try to add queried peers to the RT
 				newlyAdded, err := dht.routingTable.TryAddPeer(p, true, isBootsrapping)
+				logger.Infow("added peer to routing table", "peer", p, "isBootstrapping", isBootsrapping, "newlyAdded", newlyAdded, "err", err)
 				if err != nil {
 					// peer not added.
 					continue
@@ -653,10 +661,55 @@ func (dht *IpfsDHT) rtPeerLoop() {
 	}()
 }
 
+func (dht *IpfsDHT) autoConnectCheck(p peer.ID) error {
+	for _, id := range dht.routingTable.ListPeers() {
+		logger.Infow("RoutingTable contains peer", "peer", id, "count", dht.routingTable.Size())
+	}
+
+	if !dht.autoConnect {
+		if dht.host.Network().Connectedness(p) != network.Connected {
+			logger.Infow("not connected and autoConnect is false", "peer", p)
+			return errors.New("not connected and autoConnect is false")
+		}
+
+		dht.allowedPeersLk.Lock()
+		defer dht.allowedPeersLk.Unlock()
+
+		if len(dht.host.Network().Peers()) <= 1 {
+			logger.Infow("first peer found", "peer", p)
+			dht.allowedPeers = map[peer.ID]struct{}{
+				p: {},
+			}
+			dht.firstPeerTime = time.Now()
+			return nil
+		}
+
+		if dht.firstPeerTime.After(time.Now().Add(-3 * time.Second)) {
+			logger.Infow("manually connected peer found", "peer", p)
+			dht.allowedPeers[p] = struct{}{}
+			return nil
+		}
+
+		if _, ok := dht.allowedPeers[p]; ok {
+			logger.Infow("already manually connected peer found", "peer", p)
+			return nil
+		}
+
+		logger.Infow("prevent peer from connecting", "peer", p)
+		return errors.New("prevent peer from connecting")
+	}
+
+	return nil
+}
+
 // peerFound verifies whether the found peer advertises DHT protocols
 // and probe it to make sure it answers DHT queries as expected. If
 // it fails to answer, it isn't added to the routingTable.
 func (dht *IpfsDHT) peerFound(p peer.ID) {
+	if err := dht.autoConnectCheck(p); err != nil {
+		return
+	}
+
 	// if the peer is already in the routing table or the appropriate bucket is
 	// already full, don't try to add the new peer.ID
 	if !dht.routingTable.UsefulNewPeer(p) {

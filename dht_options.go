@@ -229,6 +229,13 @@ func DisableAutoRefresh() Option {
 	}
 }
 
+func DisableAutoConnect() Option {
+	return func(c *dhtcfg.Config) error {
+		c.RoutingTable.AutoConnect = false
+		return nil
+	}
+}
+
 // DisableProviders disables storing and retrieving provider records.
 //
 // Defaults to enabled.
